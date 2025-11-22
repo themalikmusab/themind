@@ -7,7 +7,7 @@ import db from '../database/init.js';
 export class AttendanceSessionManager {
   constructor(io) {
     this.io = io;
-    this.activeSessions = new Map(); // sessionId -> interval
+    this.activeSessions = new Map(); // sessionId -> { interval, classId, timeout }
   }
 
   /**
@@ -32,12 +32,18 @@ export class AttendanceSessionManager {
       this.io.to(`session-${sessionId}`).emit('scangrid-update', newScanGrid);
     }, 6000);
 
-    this.activeSessions.set(sessionId, interval);
-
     // Auto-close after 15 minutes
-    setTimeout(() => {
+    const timeout = setTimeout(() => {
       this.stopSession(sessionId);
     }, 15 * 60 * 1000);
+
+    // Store session data
+    this.activeSessions.set(sessionId, {
+      interval,
+      timeout,
+      classId,
+      startedAt: Date.now()
+    });
 
     console.log(`✅ Session ${sessionId} started for class ${classId}`);
 
@@ -53,10 +59,11 @@ export class AttendanceSessionManager {
    * Stop an attendance session
    */
   async stopSession(sessionId) {
-    // Clear the interval
-    const interval = this.activeSessions.get(sessionId);
-    if (interval) {
-      clearInterval(interval);
+    // Clear the interval and timeout
+    const sessionData = this.activeSessions.get(sessionId);
+    if (sessionData) {
+      clearInterval(sessionData.interval);
+      clearTimeout(sessionData.timeout);
       this.activeSessions.delete(sessionId);
     }
 
@@ -216,5 +223,41 @@ export class AttendanceSessionManager {
    */
   getActiveSessionsCount() {
     return this.activeSessions.size;
+  }
+
+  /**
+   * Get active session for a specific class
+   */
+  getActiveSessionForClass(classId) {
+    for (const [sessionId, sessionData] of this.activeSessions.entries()) {
+      if (sessionData.classId === classId) {
+        return {
+          id: sessionId,
+          classId: sessionData.classId,
+          startedAt: sessionData.startedAt
+        };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Get attendance count for a session
+   */
+  async getAttendanceCount(sessionId) {
+    const result = db.prepare(`
+      SELECT COUNT(*) as count
+      FROM attendance_records
+      WHERE session_id = ?
+    `).get(sessionId);
+
+    return result ? result.count : 0;
+  }
+
+  /**
+   * Get all active session IDs
+   */
+  getActiveSessionIds() {
+    return Array.from(this.activeSessions.keys());
   }
 }

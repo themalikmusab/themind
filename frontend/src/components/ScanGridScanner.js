@@ -1,4 +1,5 @@
-import { io } from 'socket.io-client';
+import { io } from '../../../node_modules/socket.io-client/dist/socket.io.esm.min.js';
+import { apiService } from '../services/api.js';
 
 export class ScanGridScanner {
   constructor(user, classData, onScanComplete) {
@@ -10,6 +11,7 @@ export class ScanGridScanner {
     this.isScanning = false;
     this.scanInterval = null;
     this.socket = null;
+    this.activeSession = null;
   }
 
   render() {
@@ -51,7 +53,7 @@ export class ScanGridScanner {
     const status = document.createElement('div');
     status.className = 'text-center mt-3';
     status.id = 'scanner-status';
-    status.innerHTML = '<div class="spinner"></div><p class="mt-2">Starting camera...</p>';
+    status.innerHTML = '<div class="spinner"></div><p class="mt-2">Checking for active session...</p>';
 
     // Control buttons
     const controls = document.createElement('div');
@@ -72,17 +74,82 @@ export class ScanGridScanner {
     container.appendChild(status);
     container.appendChild(controls);
 
-    // Start scanner
-    setTimeout(() => this.startScanning(), 100);
+    // Check for active session then start scanner
+    setTimeout(() => this.checkAndStartScanning(), 100);
 
     return container;
+  }
+
+  async checkAndStartScanning() {
+    const status = document.getElementById('scanner-status');
+
+    try {
+      // Check if there's an active session for this class
+      const response = await apiService.getActiveSession(this.classData.id);
+
+      if (response.success && response.session) {
+        this.activeSession = response.session;
+        status.innerHTML = '<div class="spinner"></div><p class="mt-2">Starting camera...</p>';
+        await this.startScanning();
+      } else {
+        status.innerHTML = `
+          <div class="alert alert-info">
+            <p style="font-size: 32px; margin-bottom: 8px;">⏰</p>
+            <p><strong>No Active Session</strong></p>
+            <p style="margin-top: 8px; opacity: 0.8;">Waiting for teacher to start attendance...</p>
+          </div>
+        `;
+
+        // Connect to socket to listen for session start
+        this.listenForSessionStart();
+      }
+    } catch (error) {
+      console.error('Error checking session:', error);
+      status.innerHTML = `
+        <div class="alert alert-error">
+          <p>❌ Error checking for active session</p>
+          <p style="margin-top: 8px; opacity: 0.8;">${error.message}</p>
+        </div>
+      `;
+    }
+  }
+
+  listenForSessionStart() {
+    this.socket = io();
+
+    this.socket.on('connect', () => {
+      console.log('Connected to server, waiting for session...');
+      this.socket.emit('join-class', {
+        classId: this.classData.id
+      });
+    });
+
+    this.socket.on('session-available', (data) => {
+      if (data.classId === this.classData.id) {
+        console.log('Session started!', data);
+        this.activeSession = { id: data.sessionId, classId: data.classId };
+
+        const status = document.getElementById('scanner-status');
+        status.innerHTML = '<div class="spinner"></div><p class="mt-2">Session started! Starting camera...</p>';
+
+        this.startScanning();
+      }
+    });
+
+    this.socket.on('disconnect', () => {
+      console.log('Disconnected from server');
+    });
   }
 
   async startScanning() {
     try {
       // Request camera access
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' } // Use back camera on mobile
+        video: {
+          facingMode: 'environment', // Use back camera on mobile
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        }
       });
 
       this.videoElement.srcObject = stream;
@@ -93,29 +160,46 @@ export class ScanGridScanner {
         status.innerHTML = '<p style="color: #00FF00; font-weight: bold;">🟢 Scanning... Point at code</p>';
 
         const controls = document.getElementById('scanner-controls');
-        controls.style.display = 'flex';
+        if (controls) {
+          controls.style.display = 'flex';
+        }
 
         this.isScanning = true;
         this.startScanLoop();
       };
 
-      // Connect to socket for real-time scanning
-      this.socket = io();
+      // Connect to socket if not already connected
+      if (!this.socket || !this.socket.connected) {
+        this.socket = io();
+        this.socket.on('connect', () => {
+          console.log('Scanner connected to server');
+        });
+      }
 
     } catch (error) {
       console.error('Camera access error:', error);
       const status = document.getElementById('scanner-status');
-      status.innerHTML = '<p style="color: #FF0000;">❌ Camera access denied. Please allow camera access.</p>';
+
+      let errorMessage = '❌ Camera access denied. Please allow camera access.';
+      if (error.name === 'NotAllowedError') {
+        errorMessage = '❌ Camera permission denied. Please allow camera access in browser settings.';
+      } else if (error.name === 'NotFoundError') {
+        errorMessage = '❌ No camera found. Please ensure you have a camera connected.';
+      } else if (error.name === 'NotReadableError') {
+        errorMessage = '❌ Camera is already in use by another application.';
+      }
+
+      status.innerHTML = `<div class="alert alert-error"><p>${errorMessage}</p></div>`;
     }
   }
 
   startScanLoop() {
-    // Scan every 100ms for millisecond-fast detection
+    // Scan every 200ms for optimal performance vs battery
     this.scanInterval = setInterval(() => {
       if (!this.isScanning) return;
 
       this.detectScanGrid();
-    }, 100); // 10 times per second = ~100ms response time
+    }, 200);
   }
 
   detectScanGrid() {
@@ -137,7 +221,7 @@ export class ScanGridScanner {
     // Detect ScanGrid in center of frame
     const centerX = canvas.width / 2;
     const centerY = canvas.height / 2;
-    const gridSize = Math.min(canvas.width, canvas.height) * 0.6; // 60% of frame
+    const gridSize = Math.min(canvas.width, canvas.height) * 0.5; // 50% of frame
 
     try {
       const gridData = this.extractGridFromFrame(ctx, centerX, centerY, gridSize);
@@ -162,31 +246,49 @@ export class ScanGridScanner {
     ];
 
     let validColorCount = 0;
+    const confidenceThreshold = 70; // Need at least 70% valid colors
 
     // Extract 10x10 grid
     for (let row = 0; row < 10; row++) {
       const rowData = [];
 
       for (let col = 0; col < 10; col++) {
-        const x = startX + col * cellSize + cellSize / 2;
-        const y = startY + row * cellSize + cellSize / 2;
+        const x = Math.floor(startX + col * cellSize + cellSize / 2);
+        const y = Math.floor(startY + row * cellSize + cellSize / 2);
 
-        // Get pixel color
-        const imageData = ctx.getImageData(x, y, 1, 1);
-        const pixel = imageData.data;
+        // Sample multiple pixels for better accuracy
+        const samples = [
+          ctx.getImageData(x, y, 1, 1).data,
+          ctx.getImageData(x - 2, y, 1, 1).data,
+          ctx.getImageData(x + 2, y, 1, 1).data,
+          ctx.getImageData(x, y - 2, 1, 1).data,
+          ctx.getImageData(x, y + 2, 1, 1).data
+        ];
+
+        // Average the samples
+        const avgPixel = [0, 0, 0];
+        samples.forEach(sample => {
+          avgPixel[0] += sample[0];
+          avgPixel[1] += sample[1];
+          avgPixel[2] += sample[2];
+        });
+        avgPixel[0] = Math.floor(avgPixel[0] / samples.length);
+        avgPixel[1] = Math.floor(avgPixel[1] / samples.length);
+        avgPixel[2] = Math.floor(avgPixel[2] / samples.length);
 
         // Convert to hex
         const hex = '#' +
-          ('0' + pixel[0].toString(16)).slice(-2).toUpperCase() +
-          ('0' + pixel[1].toString(16)).slice(-2).toUpperCase() +
-          ('0' + pixel[2].toString(16)).slice(-2).toUpperCase();
+          ('0' + avgPixel[0].toString(16)).slice(-2).toUpperCase() +
+          ('0' + avgPixel[1].toString(16)).slice(-2).toUpperCase() +
+          ('0' + avgPixel[2].toString(16)).slice(-2).toUpperCase();
 
         // Find closest matching color
         const closestColor = this.findClosestColor(hex, colors);
         rowData.push(closestColor);
 
-        // Check if color is valid
-        if (colors.includes(closestColor)) {
+        // Check if color is valid (distance check)
+        const distance = this.colorDistance(hex, closestColor);
+        if (distance < 120) { // Increased tolerance
           validColorCount++;
         }
       }
@@ -194,8 +296,8 @@ export class ScanGridScanner {
       grid.push(rowData);
     }
 
-    // Only return grid if we detected enough valid colors (at least 80%)
-    if (validColorCount >= 80) {
+    // Only return grid if we detected enough valid colors
+    if (validColorCount >= confidenceThreshold) {
       return grid;
     }
 
@@ -209,11 +311,7 @@ export class ScanGridScanner {
 
     palette.forEach(color => {
       const paletteRgb = this.hexToRgb(color);
-      const distance = Math.sqrt(
-        Math.pow(rgb.r - paletteRgb.r, 2) +
-        Math.pow(rgb.g - paletteRgb.g, 2) +
-        Math.pow(rgb.b - paletteRgb.b, 2)
-      );
+      const distance = this.colorDistance(hex, color);
 
       if (distance < minDistance) {
         minDistance = distance;
@@ -221,8 +319,18 @@ export class ScanGridScanner {
       }
     });
 
-    // Only return if distance is reasonable (not too far from any palette color)
-    return minDistance < 100 ? closestColor : palette[0];
+    return closestColor;
+  }
+
+  colorDistance(hex1, hex2) {
+    const rgb1 = this.hexToRgb(hex1);
+    const rgb2 = this.hexToRgb(hex2);
+
+    return Math.sqrt(
+      Math.pow(rgb1.r - rgb2.r, 2) +
+      Math.pow(rgb1.g - rgb2.g, 2) +
+      Math.pow(rgb1.b - rgb2.b, 2)
+    );
   }
 
   hexToRgb(hex) {
@@ -239,11 +347,11 @@ export class ScanGridScanner {
     this.isScanning = false;
 
     const status = document.getElementById('scanner-status');
-    status.innerHTML = '<div class="spinner"></div><p class="mt-2">⚡ Processing...</p>';
+    status.innerHTML = '<div class="spinner"></div><p class="mt-2">⚡ Processing code...</p>';
 
     // Send to server via socket
     this.socket.emit('scan-code', {
-      sessionId: this.getActiveSessionId(),
+      classId: this.classData.id,
       studentId: this.user.id,
       scannedData: { gridData },
       timestamp: Date.now()
@@ -259,18 +367,12 @@ export class ScanGridScanner {
 
       // Resume scanning after 2 seconds
       setTimeout(() => {
-        if (this.videoElement.srcObject) {
+        if (this.videoElement && this.videoElement.srcObject) {
           this.isScanning = true;
           status.innerHTML = '<p style="color: #00FF00; font-weight: bold;">🟢 Scanning... Point at code</p>';
         }
       }, 2000);
     });
-  }
-
-  getActiveSessionId() {
-    // In a real implementation, we'd query the server for active sessions
-    // For now, we'll use a placeholder that the server will handle
-    return 0; // Server will find the active session for this class
   }
 
   stopScanning() {
@@ -283,6 +385,7 @@ export class ScanGridScanner {
 
     if (this.videoElement && this.videoElement.srcObject) {
       this.videoElement.srcObject.getTracks().forEach(track => track.stop());
+      this.videoElement.srcObject = null;
     }
 
     if (this.socket) {
