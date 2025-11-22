@@ -6,6 +6,9 @@ import db from '../database/init.js';
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'themind-jwt-secret-change-in-production';
 
+// Email validation regex
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 /**
  * Register a new user
  */
@@ -13,17 +16,37 @@ router.post('/register', async (req, res) => {
   try {
     const { email, password, name, role } = req.body;
 
-    // Validate input
+    // Validate required fields
     if (!email || !password || !name || !role) {
       return res.status(400).json({ error: 'All fields are required' });
     }
 
+    // Sanitize inputs
+    const sanitizedEmail = email.trim().toLowerCase();
+    const sanitizedName = name.trim();
+
+    // Validate email format
+    if (!EMAIL_REGEX.test(sanitizedEmail)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    // Validate password strength
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    // Validate name
+    if (sanitizedName.length < 2) {
+      return res.status(400).json({ error: 'Name must be at least 2 characters' });
+    }
+
+    // Validate role
     if (!['teacher', 'student'].includes(role)) {
       return res.status(400).json({ error: 'Invalid role' });
     }
 
     // Check if user already exists
-    const existingUser = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    const existingUser = db.prepare('SELECT id FROM users WHERE email = ?').get(sanitizedEmail);
     if (existingUser) {
       return res.status(400).json({ error: 'Email already registered' });
     }
@@ -37,7 +60,7 @@ router.post('/register', async (req, res) => {
       VALUES (?, ?, ?, ?)
     `);
 
-    const result = stmt.run(email, hashedPassword, name, role);
+    const result = stmt.run(sanitizedEmail, hashedPassword, sanitizedName, role);
 
     // Generate JWT token
     const token = jwt.sign(
@@ -51,14 +74,17 @@ router.post('/register', async (req, res) => {
       token,
       user: {
         id: result.lastInsertRowid,
-        email,
-        name,
+        email: sanitizedEmail,
+        name: sanitizedName,
         role
       }
     });
   } catch (error) {
     console.error('Registration error:', error);
-    res.status(500).json({ error: 'Registration failed' });
+    res.status(500).json({
+      error: 'Registration failed',
+      message: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
@@ -74,8 +100,16 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
+    // Sanitize email
+    const sanitizedEmail = email.trim().toLowerCase();
+
+    // Validate email format
+    if (!EMAIL_REGEX.test(sanitizedEmail)) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
     // Find user
-    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(sanitizedEmail);
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -105,7 +139,10 @@ router.post('/login', async (req, res) => {
     });
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ error: 'Login failed' });
+    res.status(500).json({
+      error: 'Login failed',
+      message: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
@@ -130,7 +167,13 @@ router.get('/me', (req, res) => {
 
     res.json({ user });
   } catch (error) {
-    res.status(401).json({ error: 'Invalid token' });
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: 'Token expired' });
+    }
+    res.status(401).json({ error: 'Authentication failed' });
   }
 });
 
