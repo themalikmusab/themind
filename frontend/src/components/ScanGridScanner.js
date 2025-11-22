@@ -115,7 +115,8 @@ export class ScanGridScanner {
   }
 
   listenForSessionStart() {
-    this.socket = io();
+    const socketUrl = import.meta.env.VITE_API_URL || window.location.origin;
+    this.socket = io(socketUrl);
 
     this.socket.on('connect', () => {
       console.log('Connected to server, waiting for session...');
@@ -170,7 +171,8 @@ export class ScanGridScanner {
 
       // Connect to socket if not already connected
       if (!this.socket || !this.socket.connected) {
-        this.socket = io();
+        const socketUrl = import.meta.env.VITE_API_URL || window.location.origin;
+        this.socket = io(socketUrl);
         this.socket.on('connect', () => {
           console.log('Scanner connected to server');
         });

@@ -146,8 +146,9 @@ export class TeacherDashboard {
 
   async startSession() {
     try {
-      // Connect to socket
-      this.socket = io();
+      // Connect to socket (use environment variable for production)
+      const socketUrl = import.meta.env.VITE_API_URL || window.location.origin;
+      this.socket = io(socketUrl);
 
       this.socket.on('connect', () => {
         console.log('Connected to server');

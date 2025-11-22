@@ -3,7 +3,10 @@
  * Centralized API calls with error handling
  */
 
-const BASE_URL = '/api';
+// Use environment variable in production, fallback to /api for local dev
+const BASE_URL = import.meta.env.VITE_API_URL
+  ? `${import.meta.env.VITE_API_URL}/api`
+  : '/api';
 
 class APIService {
   getToken() {
