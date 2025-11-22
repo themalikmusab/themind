@@ -1,0 +1,33 @@
+{
+  "name": "themind-attendance",
+  "version": "1.0.0",
+  "description": "Smart Attendance System with Proprietary ScanGrid Technology",
+  "main": "backend/server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "server": "nodemon backend/server.js",
+    "client": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": ["attendance", "qr", "education", "scangrid"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.6.1",
+    "socket.io-client": "^4.6.1",
+    "jsonwebtoken": "^9.0.2",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "better-sqlite3": "^9.2.2",
+    "canvas": "^2.11.2"
+  },
+  "devDependencies": {
+    "vite": "^5.0.11",
+    "concurrently": "^8.2.2",
+    "nodemon": "^3.0.2"
+  }
+}
